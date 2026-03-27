@@ -1,0 +1,350 @@
+diff --git a/app/core/config.py b/app/core/config.py
+index b73f5f5..a1550ef 100644
+--- a/app/core/config.py
++++ b/app/core/config.py
+@@ -96,6 +96,35 @@ class LoggingSettings(BaseSettings):
+     )
+ 
+ 
++class MLISSettings(BaseSettings):
++    """MLIS (HPE Machine Learning Inference Server) integration settings."""
++
++    ENABLED: bool = Field(
++        default=False,
++        description="Use external MLIS endpoints instead of local models for transcription/diarization",
++    )
++    WHISPER_API_URL: str = Field(
++        default="",
++        description="MLIS Whisper endpoint base URL (e.g. http://whisper-service:8000)",
++    )
++    WHISPER_API_KEY: str = Field(
++        default="",
++        description="API key for MLIS Whisper endpoint",
++    )
++    DIARIZATION_API_URL: str = Field(
++        default="",
++        description="MLIS pyannote diarization endpoint base URL",
++    )
++    DIARIZATION_API_KEY: str = Field(
++        default="",
++        description="API key for MLIS diarization endpoint",
++    )
++    REQUEST_TIMEOUT: float = Field(
++        default=300.0,
++        description="HTTP request timeout in seconds for MLIS calls",
++    )
++
++
+ class CallbackSettings(BaseSettings):
+     """Callback configuration settings."""
+ 
+@@ -134,6 +163,7 @@ class Settings(BaseSettings):
+     whisper: WhisperSettings = Field(default_factory=WhisperSettings)
+     logging: LoggingSettings = Field(default_factory=LoggingSettings)
+     callback: CallbackSettings = Field(default_factory=CallbackSettings)
++    mlis: MLISSettings = Field(default_factory=MLISSettings)
+ 
+     @field_validator("ENVIRONMENT", mode="before")
+     @classmethod
+diff --git a/app/infrastructure/ml/__init__.py b/app/infrastructure/ml/__init__.py
+index 57758f3..095f870 100644
+--- a/app/infrastructure/ml/__init__.py
++++ b/app/infrastructure/ml/__init__.py
+@@ -10,10 +10,18 @@ from app.infrastructure.ml.whisperx_alignment_service import WhisperXAlignmentSe
+ from app.infrastructure.ml.whisperx_speaker_assignment_service import (
+     WhisperXSpeakerAssignmentService,
+ )
++from app.infrastructure.ml.mlis_transcription_service import (
++    MLISTranscriptionService,
++)
++from app.infrastructure.ml.mlis_diarization_service import (
++    MLISDiarizationService,
++)
+ 
+ __all__ = [
+     "WhisperXTranscriptionService",
+     "WhisperXDiarizationService",
+     "WhisperXAlignmentService",
+     "WhisperXSpeakerAssignmentService",
++    "MLISTranscriptionService",
++    "MLISDiarizationService",
+ ]
+diff --git a/app/infrastructure/ml/mlis_diarization_service.py b/app/infrastructure/ml/mlis_diarization_service.py
+new file mode 100644
+index 0000000..ae1b393
+--- /dev/null
++++ b/app/infrastructure/ml/mlis_diarization_service.py
+@@ -0,0 +1,100 @@
++"""MLIS (HPE Machine Learning Inference Server) implementation of diarization service.
++
++Calls an external pyannote diarization API instead of loading the model locally.
++"""
++
++import io
++import wave
++from typing import Any
++
++import httpx
++import numpy as np
++import pandas as pd
++
++from app.core.logging import logger
++
++
++class MLISDiarizationService:
++    """
++    MLIS-based diarization service that calls an external pyannote API.
++
++    The remote endpoint should accept audio and return speaker segments.
++    Expected response format:
++        {
++            "segments": [
++                {"start": 0.0, "end": 5.2, "speaker": "SPEAKER_00"},
++                {"start": 5.5, "end": 10.1, "speaker": "SPEAKER_01"}
++            ]
++        }
++    """
++
++    def __init__(self, api_url: str, api_key: str, timeout: float = 300.0) -> None:
++        self.api_url = api_url.rstrip("/")
++        self.api_key = api_key
++        self.timeout = timeout
++        self.logger = logger
++
++    @staticmethod
++    def _audio_to_wav_bytes(audio: np.ndarray, sample_rate: int = 16000) -> bytes:
++        """Convert float32 numpy audio array to WAV bytes."""
++        buf = io.BytesIO()
++        pcm = (audio * 32767).astype(np.int16)
++        with wave.open(buf, "wb") as wf:
++            wf.setnchannels(1)
++            wf.setsampwidth(2)
++            wf.setframerate(sample_rate)
++            wf.writeframes(pcm.tobytes())
++        return buf.getvalue()
++
++    def diarize(
++        self,
++        audio: np.ndarray[Any, np.dtype[np.float32]],
++        device: str,
++        min_speakers: int | None = None,
++        max_speakers: int | None = None,
++    ) -> pd.DataFrame:
++        """Diarize audio by calling the remote MLIS pyannote endpoint."""
++        self.logger.info("Sending audio to MLIS diarization API at %s", self.api_url)
++
++        wav_bytes = self._audio_to_wav_bytes(audio)
++        endpoint = f"{self.api_url}/v1/audio/diarizations"
++
++        data: dict[str, str] = {}
++        if min_speakers is not None:
++            data["min_speakers"] = str(min_speakers)
++        if max_speakers is not None:
++            data["max_speakers"] = str(max_speakers)
++
++        with httpx.Client(timeout=self.timeout) as client:
++            response = client.post(
++                endpoint,
++                headers={"Authorization": f"Bearer {self.api_key}"},
++                data=data,
++                files={"file": ("audio.wav", wav_bytes, "audio/wav")},
++            )
++            response.raise_for_status()
++
++        result = response.json()
++        segments = result.get("segments", [])
++        self.logger.info("MLIS diarization API returned %d segments", len(segments))
++
++        # Build DataFrame matching WhisperX DiarizationPipeline output format
++        # Expected columns: start, end, speaker, segment (segment is an interval label)
++        df = pd.DataFrame(segments)
++        if df.empty:
++            df = pd.DataFrame(columns=["start", "end", "speaker", "segment"])
++        else:
++            if "segment" not in df.columns:
++                df["segment"] = df.apply(
++                    lambda row: f"[ {row['start']:.3f} -->  {row['end']:.3f}]", axis=1
++                )
++            if "label" not in df.columns:
++                df["label"] = df["speaker"]
++
++        return df
++
++    def load_model(self, device: str, hf_token: str) -> None:
++        """No-op: model is served remotely."""
++
++    def unload_model(self) -> None:
++        """No-op: model is served remotely."""
+diff --git a/app/infrastructure/ml/mlis_transcription_service.py b/app/infrastructure/ml/mlis_transcription_service.py
+new file mode 100644
+index 0000000..539f2e6
+--- /dev/null
++++ b/app/infrastructure/ml/mlis_transcription_service.py
+@@ -0,0 +1,108 @@
++"""MLIS (HPE Machine Learning Inference Server) implementation of transcription service.
++
++Calls an external OpenAI-compatible Whisper API instead of loading the model locally.
++"""
++
++import io
++import wave
++from typing import Any
++
++import httpx
++import numpy as np
++
++from app.core.logging import logger
++
++
++class MLISTranscriptionService:
++    """
++    MLIS-based transcription service that calls an external Whisper API.
++
++    The remote endpoint must be OpenAI-compatible (POST /v1/audio/transcriptions).
++    """
++
++    def __init__(self, api_url: str, api_key: str, timeout: float = 300.0) -> None:
++        self.api_url = api_url.rstrip("/")
++        self.api_key = api_key
++        self.timeout = timeout
++        self.logger = logger
++
++    @staticmethod
++    def _audio_to_wav_bytes(audio: np.ndarray, sample_rate: int = 16000) -> bytes:
++        """Convert float32 numpy audio array to WAV bytes."""
++        buf = io.BytesIO()
++        pcm = (audio * 32767).astype(np.int16)
++        with wave.open(buf, "wb") as wf:
++            wf.setnchannels(1)
++            wf.setsampwidth(2)
++            wf.setframerate(sample_rate)
++            wf.writeframes(pcm.tobytes())
++        return buf.getvalue()
++
++    def transcribe(
++        self,
++        audio: np.ndarray[Any, np.dtype[np.float32]],
++        task: str,
++        asr_options: dict[str, Any],
++        vad_options: dict[str, Any],
++        language: str,
++        batch_size: int,
++        chunk_size: int,
++        model: str,
++        device: str,
++        device_index: int,
++        compute_type: str,
++        threads: int,
++    ) -> dict[str, Any]:
++        """Transcribe audio by calling the remote MLIS Whisper endpoint."""
++        self.logger.info(
++            "Sending audio to MLIS Whisper API at %s (model=%s, language=%s, task=%s)",
++            self.api_url,
++            model,
++            language,
++            task,
++        )
++
++        wav_bytes = self._audio_to_wav_bytes(audio)
++        endpoint = f"{self.api_url}/v1/audio/transcriptions"
++
++        data: dict[str, str] = {
++            "model": model,
++            "language": language,
++            "response_format": "verbose_json",
++            "timestamp_granularities[]": "segment",
++        }
++        if task == "translate":
++            endpoint = f"{self.api_url}/v1/audio/translations"
++            data.pop("language", None)
++
++        with httpx.Client(timeout=self.timeout) as client:
++            response = client.post(
++                endpoint,
++                headers={"Authorization": f"Bearer {self.api_key}"},
++                data=data,
++                files={"file": ("audio.wav", wav_bytes, "audio/wav")},
++            )
++            response.raise_for_status()
++
++        result = response.json()
++        self.logger.info("MLIS Whisper API returned %d segments", len(result.get("segments", [])))
++
++        # Map OpenAI verbose_json response to WhisperX-compatible format
++        segments = []
++        for seg in result.get("segments", []):
++            segments.append({
++                "start": seg.get("start", 0.0),
++                "end": seg.get("end", 0.0),
++                "text": seg.get("text", ""),
++            })
++
++        return {
++            "segments": segments,
++            "language": result.get("language", language),
++        }
++
++    def load_model(self, *args: Any, **kwargs: Any) -> None:
++        """No-op: model is served remotely."""
++
++    def unload_model(self) -> None:
++        """No-op: model is served remotely."""
+diff --git a/app/services/whisperx_wrapper_service.py b/app/services/whisperx_wrapper_service.py
+index 632c905..0574ded 100755
+--- a/app/services/whisperx_wrapper_service.py
++++ b/app/services/whisperx_wrapper_service.py
+@@ -15,7 +15,7 @@ from whisperx import (
+ from whisperx.diarize import DiarizationPipeline
+ 
+ from app.callbacks import post_task_callback
+-from app.core.config import Config
++from app.core.config import Config, get_settings
+ from app.core.logging import logger
+ from app.domain.services.alignment_service import IAlignmentService
+ from app.domain.services.diarization_service import IDiarizationService
+@@ -277,18 +277,40 @@ def process_audio_common(
+     """
+     # Import here to avoid circular dependency
+     from app.infrastructure.ml import (
++        MLISDiarizationService,
++        MLISTranscriptionService,
+         WhisperXAlignmentService,
+         WhisperXDiarizationService,
+         WhisperXSpeakerAssignmentService,
+         WhisperXTranscriptionService,
+     )
+ 
+-    # Use provided services or create default WhisperX implementations
+-    transcription_svc = transcription_service or WhisperXTranscriptionService()
++    # Use MLIS remote services when enabled, otherwise fall back to local WhisperX
++    settings = get_settings()
++    if settings.mlis.ENABLED and not transcription_service:
++        logger.info("Using MLIS remote transcription service at %s", settings.mlis.WHISPER_API_URL)
++        transcription_svc: ITranscriptionService = MLISTranscriptionService(
++            api_url=settings.mlis.WHISPER_API_URL,
++            api_key=settings.mlis.WHISPER_API_KEY,
++            timeout=settings.mlis.REQUEST_TIMEOUT,
++        )
++    else:
++        transcription_svc = transcription_service or WhisperXTranscriptionService()
++
+     alignment_svc = alignment_service or WhisperXAlignmentService()
+-    diarization_svc = diarization_service or WhisperXDiarizationService(
+-        hf_token=Config.HF_TOKEN or ""
+-    )
++
++    if settings.mlis.ENABLED and not diarization_service:
++        logger.info("Using MLIS remote diarization service at %s", settings.mlis.DIARIZATION_API_URL)
++        diarization_svc: IDiarizationService = MLISDiarizationService(
++            api_url=settings.mlis.DIARIZATION_API_URL,
++            api_key=settings.mlis.DIARIZATION_API_KEY,
++            timeout=settings.mlis.REQUEST_TIMEOUT,
++        )
++    else:
++        diarization_svc = diarization_service or WhisperXDiarizationService(
++            hf_token=Config.HF_TOKEN or ""
++        )
++
+     speaker_svc = speaker_service or WhisperXSpeakerAssignmentService()
+ 
+     # Create repository for this background task (sync — runs in thread pool)

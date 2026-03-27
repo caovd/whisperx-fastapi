@@ -31,11 +31,13 @@ spec:
               containerPort: 8000
               protocol: TCP
           env:
+            {{- if .Values.hfToken }}
             - name: HF_TOKEN
               valueFrom:
                 secretKeyRef:
                   name: {{ include "whisperx-fastapi.fullname" . }}-hf-token
                   key: hf-token
+            {{- end }}
             - name: WHISPER_MODEL
               value: {{ .Values.whisperx.model | quote }}
             - name: DEFAULT_LANG
@@ -48,6 +50,26 @@ spec:
               value: {{ .Values.whisperx.logLevel | quote }}
             - name: ENVIRONMENT
               value: {{ .Values.whisperx.environment | quote }}
+            {{- if .Values.mlis.enabled }}
+            - name: MLIS__ENABLED
+              value: "true"
+            - name: MLIS__WHISPER_API_URL
+              value: {{ .Values.mlis.whisper.apiUrl | quote }}
+            - name: MLIS__WHISPER_API_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: {{ include "whisperx-fastapi.fullname" . }}-mlis
+                  key: whisper-api-key
+            - name: MLIS__DIARIZATION_API_URL
+              value: {{ .Values.mlis.diarization.apiUrl | quote }}
+            - name: MLIS__DIARIZATION_API_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: {{ include "whisperx-fastapi.fullname" . }}-mlis
+                  key: diarization-api-key
+            - name: MLIS__REQUEST_TIMEOUT
+              value: {{ .Values.mlis.requestTimeout | quote }}
+            {{- end }}
           {{- with .Values.livenessProbe }}
           livenessProbe:
             {{- toYaml . | nindent 12 }}

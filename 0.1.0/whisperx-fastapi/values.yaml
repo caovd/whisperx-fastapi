@@ -34,9 +34,30 @@ whisperx:
   # -- Environment name
   environment: "production"
 
-# -- HuggingFace access token (required for pyannote speaker diarization model).
-#    Set this value at install time: --set hfToken=hf_xxx
+# -- HuggingFace access token (required for pyannote speaker diarization model
+#    when running in local mode). Set this value at install time: --set hfToken=hf_xxx
 hfToken: ""
+
+# -----------------------------------------------------------------------------
+# MLIS — external model inference (HPE Machine Learning Inference Server)
+# When enabled, transcription and diarization call remote APIs instead of
+# loading models locally. Alignment stays local (lightweight, CPU-only).
+# -----------------------------------------------------------------------------
+mlis:
+  # -- Enable MLIS remote inference mode
+  enabled: false
+  whisper:
+    # -- MLIS Whisper endpoint base URL (OpenAI-compatible)
+    apiUrl: ""
+    # -- API key for MLIS Whisper endpoint
+    apiKey: ""
+  diarization:
+    # -- MLIS pyannote diarization endpoint base URL
+    apiUrl: ""
+    # -- API key for MLIS diarization endpoint
+    apiKey: ""
+  # -- HTTP request timeout in seconds
+  requestTimeout: "300"
 
 # -----------------------------------------------------------------------------
 # Service
