@@ -1,0 +1,120 @@
+# -- Number of replicas
+replicaCount: 1
+
+image:
+  # -- Container image repository (build from upstream Dockerfile and push to your registry)
+  repository: REGISTRY/whisperx-fastapi
+  # -- Image pull policy
+  pullPolicy: IfNotPresent
+  # -- Image tag (matches upstream release)
+  tag: "0.5.1"
+
+# -- Image pull secrets for private registries
+imagePullSecrets: []
+# -- Override the chart name
+nameOverride: ""
+# -- Override the full release name
+fullnameOverride: ""
+
+# -----------------------------------------------------------------------------
+# WhisperX configuration
+# -----------------------------------------------------------------------------
+whisperx:
+  # -- Whisper model size: tiny, base, small, medium, large, large-v1, large-v2,
+  #    large-v3, large-v3-turbo, distil-large-v2, distil-large-v3
+  model: "large-v3-turbo"
+  # -- Default transcription language (ISO 639-1)
+  language: "en"
+  # -- Inference device: cuda or cpu
+  device: "cuda"
+  # -- Compute type: float16 (GPU) or int8 (CPU)
+  computeType: "float16"
+  # -- Application log level
+  logLevel: "INFO"
+  # -- Environment name
+  environment: "production"
+
+# -- HuggingFace access token (required for pyannote speaker diarization model).
+#    Set this value at install time: --set hfToken=hf_xxx
+hfToken: ""
+
+# -----------------------------------------------------------------------------
+# Service
+# -----------------------------------------------------------------------------
+service:
+  type: ClusterIP
+  # -- FastAPI/Gunicorn listen port
+  port: 8000
+
+# -----------------------------------------------------------------------------
+# Resources — GPU required for real-time transcription
+# -----------------------------------------------------------------------------
+resources:
+  requests:
+    memory: "8Gi"
+    cpu: "2"
+  limits:
+    memory: "16Gi"
+    # -- NVIDIA GPU allocation (1x GPU with >= 8 GB VRAM)
+    nvidia.com/gpu: 1
+
+# -----------------------------------------------------------------------------
+# Persistence — cache WhisperX / HuggingFace models across restarts
+# -----------------------------------------------------------------------------
+persistence:
+  # -- Enable PVC for model cache
+  enabled: true
+  # -- Storage class (leave empty for cluster default)
+  storageClass: ""
+  # -- PVC access mode
+  accessMode: ReadWriteOnce
+  # -- PVC size (large-v3-turbo ~3 GB, plus diarization models)
+  size: 20Gi
+  # -- Use an existing PVC instead of creating one
+  existingClaim: ""
+
+# -----------------------------------------------------------------------------
+# Probes — generous initial delays for first-run model download
+# -----------------------------------------------------------------------------
+livenessProbe:
+  httpGet:
+    path: /health/live
+    port: http
+  initialDelaySeconds: 120
+  periodSeconds: 30
+  timeoutSeconds: 5
+  failureThreshold: 3
+
+readinessProbe:
+  httpGet:
+    path: /health/ready
+    port: http
+  initialDelaySeconds: 60
+  periodSeconds: 15
+  timeoutSeconds: 5
+  failureThreshold: 3
+
+# -- Optional runtime class (set to "nvidia" if your cluster requires it)
+runtimeClassName: ""
+
+# -- Node selector labels
+nodeSelector: {}
+
+# -- Tolerations (e.g. for GPU-tainted nodes)
+tolerations: []
+
+# -- Affinity rules
+affinity: {}
+
+# -----------------------------------------------------------------------------
+# PCAI / EZUA integration
+# -----------------------------------------------------------------------------
+ezua:
+  virtualService:
+    # -- Public endpoint — ${DOMAIN_NAME} is substituted by PCAI at install time
+    endpoint: "whisperx.${DOMAIN_NAME}"
+    # -- Istio gateway used by PCAI
+    istioGateway: "istio-system/ezaf-gateway"
+  kyverno:
+    # -- Inject hpe-ezua labels via Kyverno ClusterPolicy
+    enabled: true

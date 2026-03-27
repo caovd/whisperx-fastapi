@@ -1,0 +1,16 @@
+apiVersion: v2
+name: whisperx-fastapi
+description: Speech-to-text transcription with speaker diarization using WhisperX (faster-whisper + pyannote.audio)
+type: application
+version: 0.1.0
+appVersion: "0.5.1"
+kubeVersion: ">=1.21.0-0"
+home: https://github.com/pavelzbornik/whisperX-FastAPI
+keywords:
+  - ai
+  - speech-to-text
+  - transcription
+  - whisper
+  - diarization
+sources:
+  - https://github.com/pavelzbornik/whisperX-FastAPI

@@ -1,0 +1,83 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ include "whisperx-fastapi.fullname" . }}
+  labels:
+    {{- include "whisperx-fastapi.labels" . | nindent 4 }}
+spec:
+  replicas: {{ .Values.replicaCount }}
+  selector:
+    matchLabels:
+      {{- include "whisperx-fastapi.selectorLabels" . | nindent 6 }}
+  template:
+    metadata:
+      labels:
+        {{- include "whisperx-fastapi.labels" . | nindent 8 }}
+        sidecar.istio.io/inject: "true"
+    spec:
+      {{- with .Values.imagePullSecrets }}
+      imagePullSecrets:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- if .Values.runtimeClassName }}
+      runtimeClassName: {{ .Values.runtimeClassName | quote }}
+      {{- end }}
+      containers:
+        - name: {{ .Chart.Name }}
+          image: "{{ .Values.image.repository }}:{{ .Values.image.tag }}"
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          ports:
+            - name: http
+              containerPort: 8000
+              protocol: TCP
+          env:
+            - name: HF_TOKEN
+              valueFrom:
+                secretKeyRef:
+                  name: {{ include "whisperx-fastapi.fullname" . }}-hf-token
+                  key: hf-token
+            - name: WHISPER_MODEL
+              value: {{ .Values.whisperx.model | quote }}
+            - name: DEFAULT_LANG
+              value: {{ .Values.whisperx.language | quote }}
+            - name: DEVICE
+              value: {{ .Values.whisperx.device | quote }}
+            - name: COMPUTE_TYPE
+              value: {{ .Values.whisperx.computeType | quote }}
+            - name: LOG_LEVEL
+              value: {{ .Values.whisperx.logLevel | quote }}
+            - name: ENVIRONMENT
+              value: {{ .Values.whisperx.environment | quote }}
+          {{- with .Values.livenessProbe }}
+          livenessProbe:
+            {{- toYaml . | nindent 12 }}
+          {{- end }}
+          {{- with .Values.readinessProbe }}
+          readinessProbe:
+            {{- toYaml . | nindent 12 }}
+          {{- end }}
+          resources:
+            {{- toYaml .Values.resources | nindent 12 }}
+          volumeMounts:
+            {{- if .Values.persistence.enabled }}
+            - name: model-cache
+              mountPath: /root/.cache
+            {{- end }}
+      volumes:
+        {{- if .Values.persistence.enabled }}
+        - name: model-cache
+          persistentVolumeClaim:
+            claimName: {{ .Values.persistence.existingClaim | default (printf "%s-model-cache" (include "whisperx-fastapi.fullname" .)) }}
+        {{- end }}
+      {{- with .Values.nodeSelector }}
+      nodeSelector:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.tolerations }}
+      tolerations:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.affinity }}
+      affinity:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}

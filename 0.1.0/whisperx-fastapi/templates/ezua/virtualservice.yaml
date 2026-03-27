@@ -1,0 +1,25 @@
+{{- if .Values.ezua.virtualService.endpoint }}
+apiVersion: networking.istio.io/v1alpha3
+kind: VirtualService
+metadata:
+  name: {{ printf "%s-%s-virtual-service" .Release.Name .Chart.Name }}
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "whisperx-fastapi.labels" . | nindent 4 }}
+spec:
+  gateways:
+    - {{ .Values.ezua.virtualService.istioGateway | required ".Values.ezua.virtualService.istioGateway is required" }}
+  hosts:
+    - {{ .Values.ezua.virtualService.endpoint | quote }}
+  http:
+    - match:
+        - uri:
+            prefix: /
+      rewrite:
+        uri: /
+      route:
+        - destination:
+            host: {{ include "whisperx-fastapi.fullname" . }}.{{ .Release.Namespace }}.svc.cluster.local
+            port:
+              number: {{ .Values.service.port }}
+{{- end }}
